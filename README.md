@@ -16,6 +16,24 @@ npm test           # 서명·세션·정규화·템플릿 단위 테스트
 npm run build
 ```
 
+## Docker 로 띄우기 (맥북 Docker Desktop)
+
+```bash
+git clone https://github.com/NextChans/bizchat && cd bizchat
+docker compose up --build -d
+open http://localhost:3000/sample     # 체험 진입점
+```
+
+- `APP_ENV=local` 일 때만 `/sample`·`/dev/partner` 가 열린다. `KPN_ENV=product` 와는 같이 켜지지 않는다
+- 결제는 FirstPay 테스트 서버(공개 계정 `testcorp`). 가상계좌는 입금 대기 화면의 **[개발] 입금통보 보내기** 로 통보를 흉내 낸다
+- 릴리즈 이미지로 띄우려면 `docker-compose.yml` 의 `build` 대신 `image: ghcr.io/nextchans/bizchat:<버전>` (비공개 패키지면 `docker login ghcr.io` 먼저)
+- 끄기: `docker compose down`
+
+## CI · 릴리즈
+
+- `.github/workflows/ci.yml`: PR·main push 마다 typecheck → test → build → Docker 이미지 빌드 → `scripts/smoke.sh`(헬스, 운영 모드 개발 도구 404, 위조 입금통보 거부, 비루트 실행)
+- `.github/workflows/release.yml`: main 의 커밋에 `vX.Y.Z` 태그 push → 검증 → amd64·arm64 이미지 GHCR push → GitHub Release
+
 ## 흐름
 
 ```
@@ -43,7 +61,23 @@ GET /bridge/send     발송 대상 규모 선택 → 견적(비즈챗) 표시
        ├─ 접수 → SEND_REQUESTED
        ├─ 접수 거절(확정) → 망취소(netCancelFlag=Y, 원거래 mxIssueDate) → REFUNDED
        └─ 무응답 → SEND_UNKNOWN (취소하지 않음. 같은 멱등키로 재요청)
+  ※ 가상계좌(VA)는 승인 = 계좌 발급. PAID 가 아니라 WAITING_DEPOSIT 에서 멈추고 결과 화면에 계좌·기한을 보여 준다
 → 303 GET /bridge/pay/result/{주문번호}   (본인 세션만 상세 표시, 보류 건 "다시 확인하기")
+
+가상계좌 입금 → POST /bridge/pay/vact-noti   (결제서버 form POST, 결제창 호출 때 vactNotiUrl 로 넘긴 주소)
+  ├─ MxHASH256 = SHA256(MxID + passKey + MxIssueNO + MxIssueDate + Amount + Currency)  ※ 저장한 주문 값으로 계산
+  ├─ 00003000 입금 완료 → WAITING_DEPOSIT·DEPOSIT_EXPIRED·APPROVAL_UNKNOWN → PAID → 비즈챗 발송 요청(위와 같음)
+  ├─ 00003100 입금 취소 → DEPOSIT_CANCELED (발송 중단, 이미 접수된 건은 운영 알림)
+  └─ 응답 본문: 반영했으면 ACK=200OKOK, 지금 처리 못 하면 ACK=400FAIL(결제서버가 재전송)
+```
+
+가상계좌 주의
+- 입금이 끝난 가상계좌는 취소 API 가 없다. 발송 접수 거절 등으로 되돌려야 하면 `REFUND_FAILED`(수동 환불 요청, 구매자 환불계좌 필요)로 남긴다
+- 입금기한은 `KPN_VACT_EXPIRE_HOURS`(기본 24시간). 기한이 지난 대기 건은 "다시 확인하기"·배치에서 `DEPOSIT_EXPIRED`
+- 개발계는 실제 입금이 안 된다. 입금통보 테스트 API 로 시험한다(`APP_BASE_URL` 이 외부에서 접근 가능해야 통보를 받는다)
+
+```bash
+curl -X POST https://dev.firstpay.co.kr/api/v1/test/vact/deposit -H 'Content-Type: application/json' -d '{"mxId":"testcorp","mxIssueNo":"<주문번호>"}'
 ```
 
 주문 상태 전이는 `src/lib/order/types.ts`, 운영 저장소 스키마는 `docs/schema.sql`.
@@ -91,7 +125,8 @@ signature = HMAC-SHA256(partnerSecret, canonical)
 결제
 - [ ] **주문 저장소를 Postgres 로 교체** (`docs/schema.sql`). 지금은 인스턴스 메모리라 `next dev` 단일 프로세스에서만 맞다. 서버리스 배포 전 필수
 - [ ] 보류 건(`APPROVAL_UNKNOWN`·`SEND_UNKNOWN`) 배치 재확인 + `REFUND_FAILED`·`AMOUNT_MISMATCH` 운영 알림
-- [ ] 운영 MID 결제수단에서 가상계좌 제외 (입금 통보 전 발송 불가. 이 흐름은 즉시결제만 다룸)
+- [ ] 가상계좌 입금통보 인바운드 허용: 결제서버 IP(테스트 `222.110.146.137`, 운영 `210.182.8.137`)만 `/bridge/pay/vact-noti` 에 닿게 WAF·보안그룹 설정
+- [ ] `WAITING_DEPOSIT` 기한 경과 정리·`DEPOSIT_CANCELED`·VA `REFUND_FAILED`(수동 환불) 운영 알림 배치
 - [ ] 파트너 앱 복귀 스킴(`PARTNER_APP_SCHEME`) 확인, 웹뷰 앱투앱(카드사 앱) 스킴 등록은 파트너 앱 쪽 작업
 - [ ] 견적 만료·단가 변경 시 처리, 세금계산서/현금영수증 발행 주체 확정
 

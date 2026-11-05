@@ -12,8 +12,8 @@ export default function Home() {
       </p>
       {isDevToolsEnabled() && (
         <p>
-          <Link className="btn primary inline" href="/dev/partner">
-            목업 파트너(캐시노트) 배너로 진입해 보기
+          <Link className="btn primary inline" href="/sample">
+            체험 페이지로 이동
           </Link>
         </p>
       )}

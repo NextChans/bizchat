@@ -1,0 +1,24 @@
+# 로컬 체험용 (맥북 Docker Desktop). 운영 배포 설정이 아니다.
+#   docker compose up --build   →  http://localhost:3000/sample
+services:
+  bizchat:
+    build:
+      context: .
+      args:
+        APP_VERSION: local
+    # 릴리즈 이미지로 띄우려면 build 대신: image: ghcr.io/nextchans/bizchat:<버전>
+    ports:
+      - "3000:3000"
+    environment:
+      APP_ENV: local                     # /sample·/dev/partner 등 개발 도구 허용(KPN_ENV=product 면 자동 차단)
+      APP_BASE_URL: http://localhost:3000
+      # 로컬 전용 더미 키. 운영 키를 여기에 넣지 않는다
+      BRIDGE_SESSION_SECRET: local-only-bridge-session-secret-0123456789
+      CASHNOTE_PARTNER_SECRET: local-only-cashnote-partner-secret
+      # FirstPay 공개 테스트 계정(배포 샘플 값). 테스트 서버만 사용
+      KPN_ENV: develop
+      KPN_MX_ID: testcorp
+      KPN_PASSKEY: 6aMoJujE34XnL9gvUqdKGMqs9GzYaNo6
+      KPN_VACT_EXPIRE_HOURS: "24"
+      BIZCHAT_MOCK_SEND: ${BIZCHAT_MOCK_SEND:-}
+    restart: unless-stopped

@@ -7,7 +7,8 @@ export const SESSION_COOKIE = 'bizchat_bridge'
 
 export const sessionCookieOptions = {
   httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
+  // 운영은 항상 Secure. 로컬 컨테이너(APP_ENV=local, http://localhost)에서만 끈다(Safari 는 http 에서 Secure 쿠키를 버린다)
+  secure: process.env.NODE_ENV === 'production' && !(process.env.APP_ENV === 'local' && /^http:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(process.env.APP_BASE_URL ?? '')),
   // 파트너 앱에서 넘어오는 cross-site POST → 303 → GET(top-level) 에서도 쿠키가 실려야 하므로 Lax
   sameSite: 'lax' as const,
   path: '/bridge',
