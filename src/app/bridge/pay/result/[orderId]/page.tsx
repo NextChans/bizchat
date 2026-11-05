@@ -5,11 +5,12 @@ import { orderRepo } from '@/lib/order/repository'
 import { ORDER_ID_RE } from '@/lib/order/service'
 import type { Order, OrderStatus } from '@/lib/order/types'
 import Notice from '../../../Notice'
-import { recheck } from './actions'
+import { isDevToolsEnabled } from '@/lib/env'
+import { recheck, simulateDeposit } from './actions'
 
 export const dynamic = 'force-dynamic'
 
-type View = { title: string; body: string; retry?: boolean; recheck?: boolean; receipt?: boolean }
+type View = { title: string; body: string; retry?: boolean; recheck?: boolean; receipt?: boolean; vact?: boolean }
 
 const VIEWS: Record<OrderStatus, View> = {
   READY: { title: '결제가 끝나지 않았어요', body: '결제창에서 결제를 마치지 않았어요.', retry: true },
@@ -19,6 +20,9 @@ const VIEWS: Record<OrderStatus, View> = {
   DUPLICATE_BLOCKED: { title: '이미 결제한 광고예요', body: '같은 광고에 결제가 이미 진행돼 이번 결제는 승인하지 않았어요. 청구되지 않아요.' },
   APPROVING: { title: '결제를 확인하고 있어요', body: '잠시 후 다시 확인해 주세요.', recheck: true },
   APPROVAL_UNKNOWN: { title: '결제를 확인하고 있어요', body: '결제 결과를 받지 못해 확인 중이에요. 중복 결제되지 않으니 다시 결제하지 마세요.', recheck: true },
+  WAITING_DEPOSIT: { title: '입금을 기다리고 있어요', body: '아래 계좌로 입금하면 결제가 끝나고 비즈챗에 발송을 요청해요. 금액이 다르면 입금되지 않아요.', recheck: true, receipt: true, vact: true },
+  DEPOSIT_EXPIRED: { title: '입금 기한이 지났어요', body: '입금되지 않아 발송하지 않았어요. 청구되지 않아요. 다시 결제해 주세요.', retry: true },
+  DEPOSIT_CANCELED: { title: '확인이 필요한 결제예요', body: '은행에서 입금이 취소됐어요. 담당자가 확인 후 연락드릴게요.' },
   PAID: { title: '발송 요청 중이에요', body: '결제는 완료됐어요. 비즈챗에 발송을 요청하고 있어요.', recheck: true, receipt: true },
   SENDING: { title: '발송 요청 중이에요', body: '결제는 완료됐어요. 비즈챗에 발송을 요청하고 있어요.', recheck: true, receipt: true },
   SEND_UNKNOWN: { title: '발송 접수를 확인하고 있어요', body: '결제는 완료됐어요. 발송 접수 결과를 확인 중이에요.', recheck: true, receipt: true },
@@ -45,11 +49,18 @@ export default async function ResultPage({ params }: { params: Promise<{ orderId
 
   return (
     <Notice title={v.title} body={v.body}>
-      {v.receipt && <Receipt order={order} />}
+      {v.receipt && <Receipt order={order} vact={v.vact} />}
       {v.recheck && (
         <form action={recheck.bind(null, order.id)}>
           <button className="btn primary inline" type="submit">
             다시 확인하기
+          </button>
+        </form>
+      )}
+      {order.status === 'WAITING_DEPOSIT' && isDevToolsEnabled() && (
+        <form action={simulateDeposit.bind(null, order.id)}>
+          <button className="btn inline" type="submit">
+            [개발] 입금통보 보내기
           </button>
         </form>
       )}
@@ -63,9 +74,27 @@ export default async function ResultPage({ params }: { params: Promise<{ orderId
   )
 }
 
-function Receipt({ order }: { order: Order }) {
+const kstDateTime = (s?: string) =>
+  s && /^\d{14}$/.test(s) ? `${s.slice(0, 4)}.${s.slice(4, 6)}.${s.slice(6, 8)} ${s.slice(8, 10)}:${s.slice(10, 12)}` : null
+
+function Receipt({ order, vact }: { order: Order; vact?: boolean }) {
   return (
     <dl className="kv">
+      {vact && order.vactNo && (
+        <>
+          <dt>입금 계좌</dt>
+          <dd>
+            {order.bankName ? `${order.bankName} ` : ''}
+            {order.vactNo}
+          </dd>
+        </>
+      )}
+      {vact && kstDateTime(order.vactExpireAt) && (
+        <>
+          <dt>입금 기한</dt>
+          <dd>{kstDateTime(order.vactExpireAt)}</dd>
+        </>
+      )}
       <dt>발송 건수</dt>
       <dd>{order.targetCount.toLocaleString('ko-KR')}건</dd>
       <dt>결제 금액</dt>

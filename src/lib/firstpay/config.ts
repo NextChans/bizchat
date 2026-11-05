@@ -22,6 +22,8 @@ export type FirstPayConfig = {
   passKey: string
   appBaseUrl: string
   appScheme?: string
+  /** 가상계좌 입금기한(시간). 견적이 오래 묵지 않게 짧게 둔다 */
+  vactExpireHours: number
 }
 
 /** 대시보드 붙여넣기로 섞이는 공백·따옴표 제거. 한 글자만 섞여도 9010 으로만 드러난다 */
@@ -42,6 +44,8 @@ export function getFirstPayConfig(): FirstPayConfig {
     throw new Error('KPN_ENV=develop on production deployment')
   }
   const appScheme = clean(process.env.PARTNER_APP_SCHEME)
+  const hours = Number(clean(process.env.KPN_VACT_EXPIRE_HOURS) ?? '24')
+  const vactExpireHours = Number.isInteger(hours) && hours >= 1 && hours <= 168 ? hours : 24
   return {
     env,
     baseUrl: BASE_URLS[env],
@@ -51,5 +55,6 @@ export function getFirstPayConfig(): FirstPayConfig {
     appBaseUrl: appBaseUrl.replace(/\/$/, ''),
     // 앱 웹뷰에서 간편결제 후 앱 복귀용. scheme:// 형식만 허용(웹 스킴 불가)
     appScheme: appScheme && /^[a-z][a-z0-9+.-]*:\/\/$/i.test(appScheme) && !/^https?:/i.test(appScheme) ? appScheme : undefined,
+    vactExpireHours,
   }
 }

@@ -1,12 +1,22 @@
 import 'server-only'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { audit, auditWarn } from '../audit'
 import { BizchatError, getBizchatClient } from '../bizchat/client'
 import type { BridgeSession } from '../bridge/session-crypto'
 import { getFirstPayConfig } from '../firstpay/config'
 import { FirstPayNoResponseError, approve, assertApprovalUrl, cancel, inquireResult } from '../firstpay/client'
-import { payHash } from '../firstpay/hash'
-import { AUTH_USER_CANCEL, REPLY_OK, failureMessage, isSuccess, orderTimestamp, replyCodeOf } from '../firstpay/types'
+import { payHash, vactNotiHash } from '../firstpay/hash'
+import {
+  AUTH_USER_CANCEL,
+  REPLY_OK,
+  VACT_DEPOSITED,
+  VACT_DEPOSIT_CANCELED,
+  failureMessage,
+  isSuccess,
+  orderTimestamp,
+  parseKstTimestamp,
+  replyCodeOf,
+} from '../firstpay/types'
 import { orderRepo } from './repository'
 import type { Order, OrderStatus } from './types'
 
@@ -40,6 +50,9 @@ export type GoPayParams = {
     callHash: string
     lang: 'ko'
     appScheme?: string
+    /** 가상계좌: 입금통보 받을 주소(공개 URL)와 입금기한. 다른 결제수단은 무시한다 */
+    vactNotiUrl: string
+    expireDate: string
   }
 }
 
@@ -91,6 +104,9 @@ export async function preparePayment(session: BridgeSession, targetCount: number
       returnUrl: `${cfg.appBaseUrl}/bridge/pay/return/${id}`,
       callHash: payHash(cfg.mxId, id, quote.totalAmount, cfg.passKey),
       lang: 'ko',
+      // 가상계좌는 승인 때 계좌만 발급되고 입금통보로 결제가 끝난다. 주문번호는 통보 본문(MxIssueNO)에 온다
+      vactNotiUrl: `${cfg.appBaseUrl}/bridge/pay/vact-noti`,
+      expireDate: orderTimestamp(new Date(now + cfg.vactExpireHours * 3600_000)),
       ...(cfg.appScheme ? { appScheme: cfg.appScheme } : {}),
     },
   }
@@ -187,9 +203,17 @@ export async function handleAuthResult(orderId: string, form: AuthResultForm): P
     const mm = await orderRepo.transition(claimed.id, ['APPROVING'], 'AMOUNT_MISMATCH', payment)
     return mm ? refund(mm, '승인 금액 불일치', true) : claimed
   }
-  // 가상계좌는 입금 통보가 있어야 결제 완료다. 이 흐름은 즉시결제만 다룬다(MID 결제수단에서 VA 제외 필요)
-  if (d.vactNo) {
-    auditWarn('order.virtual_account_unsupported', { orderId: claimed.id })
+  // 가상계좌: 승인 = 계좌 발급. 입금통보(handleVactNoti)가 와야 결제 완료이므로 여기서 발송하지 않는다
+  if (payment.payMethod === 'VA' || d.vactNo) {
+    const waiting = await orderRepo.transition(claimed.id, ['APPROVING'], 'WAITING_DEPOSIT', {
+      ...payment,
+      payMethod: 'VA',
+      vactNo: d.vactNo ? String(d.vactNo).slice(0, 32) : undefined,
+      bankName: d.bankName ? String(d.bankName).slice(0, 30) : undefined,
+      vactExpireAt: typeof d.expireDate === 'string' && /^\d{14}$/.test(d.expireDate) ? d.expireDate : undefined,
+    })
+    if (waiting) log(waiting, 'vact_issued', { amount: waiting.amount, expireAt: waiting.vactExpireAt })
+    return waiting ?? orderRepo.get(claimed.id)
   }
 
   const paid = await orderRepo.transition(claimed.id, ['APPROVING'], 'PAID', payment)
@@ -243,6 +267,11 @@ async function refund(order: Order, reason: string, netCancel: boolean): Promise
     auditWarn('order.refund_missing_tid', { orderId: order.id })
     return orderRepo.transition(order.id, from, 'REFUND_FAILED', { replyMessage: 'tid/payMethod missing' })
   }
+  if (order.payMethod === 'VA' && order.depositedAt) {
+    // 입금이 끝난 가상계좌는 취소 API 가 없다. 구매자 환불계좌를 받아 환불 요청해야 하므로 수동 처리
+    auditWarn('order.refund_manual_vact', { orderId: order.id, reason })
+    return orderRepo.transition(order.id, from, 'REFUND_FAILED', { replyMessage: `VA 입금 완료 건: 환불 요청 필요 (${reason})`.slice(0, 200) })
+  }
   try {
     const res = await cancel({
       payMethod: order.payMethod,
@@ -269,6 +298,7 @@ async function refund(order: Order, reason: string, netCancel: boolean): Promise
 // ───────────────────────── 5. 보류 건 확정 ─────────────────────────
 
 const UNKNOWN_SETTLE_MS = 2 * 60_000
+const VACT_EXPIRE_GRACE_MS = 10 * 60_000
 
 /**
  * APPROVAL_UNKNOWN: 거래 조회로 승인 여부를 확정한다.
@@ -279,6 +309,14 @@ export async function reconcile(orderId: string): Promise<Order | null> {
   const order = await orderRepo.get(orderId)
   if (!order) return null
   if (order.status === 'SEND_UNKNOWN') return dispatchSend(order)
+  if (order.status === 'WAITING_DEPOSIT') {
+    // 입금 여부는 통보로만 확정한다. 여기서는 기한 경과만 정리(기한 뒤 통보가 와도 handleVactNoti 가 받는다)
+    const expireAt = parseKstTimestamp(order.vactExpireAt)
+    if (Number.isFinite(expireAt) && Date.now() > expireAt + VACT_EXPIRE_GRACE_MS) {
+      return orderRepo.transition(order.id, ['WAITING_DEPOSIT'], 'DEPOSIT_EXPIRED')
+    }
+    return order
+  }
   if (order.status !== 'APPROVAL_UNKNOWN') return order
 
   let res
@@ -300,6 +338,14 @@ export async function reconcile(orderId: string): Promise<Order | null> {
 
   if (approvals.length === 1 && cancels.length === 0 && Number(approvals[0]!.Amount) === order.amount && approvals[0]!.TID) {
     const a = approvals[0]!
+    if (a.PayMethod === 'VA') {
+      // 가상계좌 승인은 계좌 발급일 뿐이다. 입금은 통보로 확정한다
+      return orderRepo.transition(order.id, ['APPROVAL_UNKNOWN'], 'WAITING_DEPOSIT', {
+        tid: a.TID,
+        payMethod: 'VA',
+        replyCode: REPLY_OK,
+      })
+    }
     const paid = await orderRepo.transition(order.id, ['APPROVAL_UNKNOWN'], 'PAID', {
       tid: a.TID,
       payMethod: a.PayMethod,
@@ -314,4 +360,97 @@ export async function reconcile(orderId: string): Promise<Order | null> {
   }
   // 그 밖(부분 취소, 금액 상이, 다건)은 자동 확정하지 않는다 → 운영 확인
   return order
+}
+
+// ───────────────────────── 6. 가상계좌 입금통보 ─────────────────────────
+
+export type VactNotiForm = Record<string, string>
+
+/** 이미 입금을 반영한 상태(같은 통보 재전송은 그대로 성공 응답) */
+const AFTER_DEPOSIT: readonly OrderStatus[] = ['PAID', 'SENDING', 'SEND_UNKNOWN', 'SEND_REQUESTED', 'REFUNDING', 'REFUND_FAILED']
+
+function sameHex(a: string, b: string): boolean {
+  const x = Buffer.from(a.toLowerCase())
+  const y = Buffer.from(b.toLowerCase())
+  return x.length === y.length && timingSafeEqual(x, y)
+}
+
+/**
+ * vactNotiUrl 처리. true 면 ACK=200OKOK, false 면 ACK=400FAIL(결제서버가 다시 보낸다).
+ * 기준: 저장·반영을 끝냈거나 다시 받아도 할 일이 없으면 true. 지금 처리할 수 없고 나중에는 될 수 있으면 false.
+ * 해시는 통보 값이 아니라 우리가 저장한 주문 값(mxId·주문시각·금액)으로 만들어 비교한다.
+ */
+export async function handleVactNoti(form: VactNotiForm): Promise<boolean> {
+  const orderId = form.MxIssueNO ?? ''
+  const replyCode = form.ReplyCode ?? ''
+  if (!ORDER_ID_RE.test(orderId)) {
+    auditWarn('order.vact_noti_unknown_order', { orderId: orderId.slice(0, 32), replyCode })
+    return false
+  }
+  const order = await orderRepo.get(orderId)
+  if (!order) {
+    // 저장소 유실 등. 실패 응답으로 재전송을 받아 두고 운영 확인
+    auditWarn('order.vact_noti_unknown_order', { orderId, replyCode })
+    return false
+  }
+
+  const cfg = getFirstPayConfig()
+  const expected = vactNotiHash(cfg.mxId, cfg.passKey, order.id, order.issuedAt, order.amount, 'KRW')
+  const mismatch =
+    form.MxID !== cfg.mxId ? 'MxID' :
+    form.MxIssueDate !== order.issuedAt ? 'MxIssueDate' :
+    Number(form.Amount) !== order.amount ? 'Amount' :
+    (form.Currency ?? 'KRW') !== 'KRW' ? 'Currency' :
+    !sameHex(form.MxHASH256 ?? '', expected) ? 'MxHASH256' : null
+  if (mismatch) {
+    auditWarn('order.vact_noti_rejected', { orderId, field: mismatch, replyCode })
+    return false
+  }
+  log(order, 'vact_noti', { replyCode, status: order.status })
+
+  if (replyCode === VACT_DEPOSITED) {
+    if (order.status === 'APPROVING') return false // 승인 응답 처리 중. 재전송 때 처리
+    if (AFTER_DEPOSIT.includes(order.status)) return true // 같은 통보 재전송
+    if (!['WAITING_DEPOSIT', 'DEPOSIT_EXPIRED', 'APPROVAL_UNKNOWN'].includes(order.status)) {
+      // 발급되지 않았어야 할 주문에 입금. 자동 발송하지 않고 운영 확인(환불 요청 대상)
+      auditWarn('order.vact_deposit_unexpected', { orderId, status: order.status, amount: order.amount })
+      return true
+    }
+    const paid = await orderRepo.transition(order.id, ['WAITING_DEPOSIT', 'DEPOSIT_EXPIRED', 'APPROVAL_UNKNOWN'], 'PAID', {
+      payMethod: 'VA',
+      tid: (form.TID || order.tid || '').slice(0, 40) || undefined,
+      vactNo: (form.VactNo || order.vactNo || '').slice(0, 32) || undefined,
+      depositedAt: /^\d{14}$/.test(form.AuthDate ?? '') ? form.AuthDate : orderTimestamp(),
+      replyCode,
+    })
+    if (!paid) return false // 경합. 재전송 때 상태 보고 판단
+    log(paid, 'paid', { amount: paid.amount, payMethod: 'VA' })
+    // 입금 반영은 끝났다. 발송 실패·보류는 주문 상태로 남고 재확인 대상이므로 통보 응답과 분리한다
+    try {
+      await dispatchSend(paid)
+    } catch (e) {
+      auditWarn('order.send_after_deposit_error', { orderId, error: e instanceof Error ? e.message : 'unknown' })
+    }
+    return true
+  }
+
+  if (replyCode === VACT_DEPOSIT_CANCELED) {
+    if (order.status === 'SENDING') return false // 발송 요청이 끝난 뒤 재전송으로 처리
+    if (['WAITING_DEPOSIT', 'DEPOSIT_EXPIRED', 'DEPOSIT_CANCELED'].includes(order.status)) return true
+    const canceled = await orderRepo.transition(order.id, ['PAID', 'SEND_UNKNOWN', 'SEND_REQUESTED', 'REFUND_FAILED'], 'DEPOSIT_CANCELED', {
+      replyCode,
+      replyMessage: '입금 취소 통보',
+    })
+    if (!canceled) {
+      auditWarn('order.vact_cancel_unexpected', { orderId, status: order.status })
+      return true
+    }
+    // 이미 비즈챗에 접수된 건은 발송을 막거나 회수해야 한다 → 운영 알림 대상
+    auditWarn('order.vact_deposit_canceled', { orderId, from: order.status, sendRequestId: order.sendRequestId ?? null })
+    return true
+  }
+
+  // 그 밖의 코드는 반영할 상태가 없다. 기록만 하고 성공 응답(배포 샘플과 같은 처리)
+  auditWarn('order.vact_noti_unhandled_code', { orderId, replyCode })
+  return true
 }

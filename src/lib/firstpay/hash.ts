@@ -17,3 +17,10 @@ export const cancelHash = (mxId: string, mxIssueNo: string, amount: number, pass
 /** 거래 조회: mxId + mxIssueNo + mxIssueDate + passKey */
 export const inquiryHash = (mxId: string, mxIssueNo: string, mxIssueDate: string, passKey: string) =>
   sha256(`${mxId}${mxIssueNo}${mxIssueDate}${passKey}`)
+
+/**
+ * 가상계좌 입금통보 검증(MxHASH256): MxID + passKey + MxIssueNO + MxIssueDate + Amount + Currency
+ * 순서가 다른 해시들과 다르다(passKey 가 두 번째). 값은 통보 값이 아니라 가맹점이 저장한 주문 값으로 만든다.
+ */
+export const vactNotiHash = (mxId: string, passKey: string, mxIssueNo: string, mxIssueDate: string, amount: number, currency: string) =>
+  sha256(`${mxId}${passKey}${mxIssueNo}${mxIssueDate}${amount}${currency}`)

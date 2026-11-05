@@ -7,6 +7,11 @@
  *     ├ AUTH_FAILED         ├ APPROVAL_UNKNOWN (승인 무응답: 조회로 확정)
  *     └ DUPLICATE_BLOCKED   └ AMOUNT_MISMATCH (승인 금액 불일치: 취소 필요)
  *                                                          └ REFUNDING → REFUNDED / REFUND_FAILED(수동 처리)
+ *
+ * 가상계좌(VA): 승인 = 계좌 발급일 뿐 결제 완료가 아니다. 입금통보(vactNotiUrl)를 받아야 PAID 로 간다.
+ *   APPROVING ─(승인 성공, vactNo)→ WAITING_DEPOSIT ─(입금통보 00003000)→ PAID → (위와 같음)
+ *                                       └ DEPOSIT_EXPIRED (입금기한 경과. 기한 뒤 통보가 와도 PAID 로 받는다)
+ *   PAID·SEND_* ─(입금취소 통보 00003100)→ DEPOSIT_CANCELED (발송 중단. 이미 접수됐으면 수동 처리)
  */
 export type OrderStatus =
   | 'READY'
@@ -17,6 +22,9 @@ export type OrderStatus =
   | 'APPROVAL_FAILED'
   | 'APPROVAL_UNKNOWN'
   | 'AMOUNT_MISMATCH'
+  | 'WAITING_DEPOSIT'
+  | 'DEPOSIT_EXPIRED'
+  | 'DEPOSIT_CANCELED'
   | 'PAID'
   | 'SENDING'
   | 'SEND_UNKNOWN'
@@ -30,6 +38,7 @@ export const CHARGED_OR_MAYBE: readonly OrderStatus[] = [
   'APPROVING',
   'APPROVAL_UNKNOWN',
   'AMOUNT_MISMATCH',
+  'WAITING_DEPOSIT',
   'PAID',
   'SENDING',
   'SEND_UNKNOWN',
@@ -59,6 +68,11 @@ export type Order = {
   replyCode?: string
   replyMessage?: string
   sendRequestId?: string
+  /** 가상계좌: 발급 계좌·은행·입금기한(YYYYMMDDHHMMSS, KST)·입금 시각 */
+  vactNo?: string
+  bankName?: string
+  vactExpireAt?: string
+  depositedAt?: string
   createdAt: number
   updatedAt: number
   approvingAt?: number
