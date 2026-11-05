@@ -83,7 +83,11 @@ jobs:
         run: |
           [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "::error::run on main"; exit 1; }
           if git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null; then
-            echo "::error::tag $VERSION already exists"; exit 1
+            # 같은 커밋을 가리키는 태그면 이전 실행이 중간에 실패한 재시도로 보고 이어간다
+            git fetch -q origin "refs/tags/$VERSION:refs/tags/$VERSION"
+            existing=$(git rev-parse "$VERSION^{commit}")
+            [[ "$existing" == "$GITHUB_SHA" ]] || { echo "::error::tag $VERSION already exists on another commit ($existing)"; exit 1; }
+            echo "tag $VERSION already on $GITHUB_SHA — reuse"; exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -119,4 +123,5 @@ jobs:
           \`\`\`
           linux/amd64 · linux/arm64 (Apple Silicon 맥 포함). 로컬 실행은 README 의 "Docker 로 띄우기" 참고.
           NOTES
+          if gh release view "$VERSION" >/dev/null 2>&1; then echo "release $VERSION exists"; exit 0; fi
           gh release create "$VERSION" --title "$VERSION" --generate-notes --notes-file notes.md --verify-tag
