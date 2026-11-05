@@ -1,17 +1,25 @@
 name: Release
 
-# main 에 머지된 커밋에 vX.Y.Z 태그를 push 하면 실행:
-#   검증 → 멀티아키(amd64·arm64) 이미지 GHCR push → 스모크 → GitHub Release 생성
+# 실행 방법 두 가지 (결과는 같다):
+#   1) main 커밋에 vX.Y.Z 태그 push
+#   2) Actions → Release → Run workflow (main, version 입력): 이 워크플로가 main 최신 커밋에 태그를 만든다
+# 검증 → 스모크 → 멀티아키(amd64·arm64) 이미지 GHCR push → GitHub Release 생성
 on:
   push:
     tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '릴리즈 버전 (예: v0.1.0). main 최신 커밋에 태그를 만든다'
+        required: true
+        type: string
 
 permissions:
   contents: write   # Release 생성
   packages: write   # GHCR push
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.version || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -23,10 +31,19 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: 태그가 main 에 있는 커밋인지 확인
+      - name: 버전 결정·검증
+        id: ver
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          git fetch origin main --depth=1000
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::tag is not on main"; exit 1; }
+          VERSION="${INPUT_VERSION:-$GITHUB_REF_NAME}"
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version must be vX.Y.Z: $VERSION"; exit 1; }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: 커밋이 main 에 있는지 확인
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::commit is not on main"; exit 1; }
 
       - uses: actions/setup-node@v4
         with:
@@ -54,10 +71,24 @@ jobs:
           context: .
           load: true
           tags: bizchat:release
-          build-args: APP_VERSION=${{ github.ref_name }}
+          build-args: APP_VERSION=${{ steps.ver.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - run: scripts/smoke.sh bizchat:release
+
+      - name: 태그 생성 (수동 실행일 때, 검증·스모크 통과 후)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "::error::run on main"; exit 1; }
+          if git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null; then
+            echo "::error::tag $VERSION already exists"; exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$VERSION" -m "$VERSION" "$GITHUB_SHA"
+          git push origin "refs/tags/$VERSION"
 
       - name: 멀티아키 이미지 push
         uses: docker/build-push-action@v6
@@ -66,25 +97,26 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ${{ steps.img.outputs.name }}:${{ github.ref_name }}
+            ${{ steps.img.outputs.name }}:${{ steps.ver.outputs.version }}
             ${{ steps.img.outputs.name }}:latest
-          build-args: APP_VERSION=${{ github.ref_name }}
+          build-args: APP_VERSION=${{ steps.ver.outputs.version }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.version=${{ steps.ver.outputs.version }}
           cache-from: type=gha
 
       - name: GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE: ${{ steps.img.outputs.name }}
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
           cat > notes.md <<NOTES
           ## 컨테이너 이미지
           \`\`\`bash
-          docker pull ${IMAGE}:${GITHUB_REF_NAME}
+          docker pull ${IMAGE}:${VERSION}
           \`\`\`
           linux/amd64 · linux/arm64 (Apple Silicon 맥 포함). 로컬 실행은 README 의 "Docker 로 띄우기" 참고.
           NOTES
-          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --notes-file notes.md --verify-tag
+          gh release create "$VERSION" --title "$VERSION" --generate-notes --notes-file notes.md --verify-tag
