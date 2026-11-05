@@ -38,7 +38,7 @@ open http://localhost:3000/sample     # 체험 진입점
 ## CI · 릴리즈
 
 - `.github/workflows/ci.yml`: PR·main push 마다 typecheck → test → build → Docker 이미지 빌드 → `scripts/smoke.sh`(헬스, 운영 모드 개발 도구 404, 위조 입금통보 거부, 비루트 실행)
-- `.github/workflows/release.yml`: main 의 커밋에 `vX.Y.Z` 태그 push → 검증 → amd64·arm64 이미지 GHCR push → GitHub Release
+- `.github/workflows/release.yml`: main 의 커밋에 `vX.Y.Z` 태그 push, 또는 Actions → Release → **Run workflow**(main, `version` 입력) → 검증 → 스모크 → (수동 실행이면 태그 생성) → amd64·arm64 이미지 GHCR push → GitHub Release
 
 ## 흐름
 
