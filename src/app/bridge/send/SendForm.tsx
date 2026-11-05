@@ -7,7 +7,7 @@ import type { GoPayParams } from '@/lib/order/service'
 
 export type QuoteView = { targetCount: number; unitPrice: number; supplyAmount: number; vat: number; totalAmount: number }
 
-type Props = { storeName: string; regionName: string; templateLabel: string; quotes: QuoteView[] }
+type Props = { storeName: string; regionName: string; templateLabel: string; messageType: 'SMS' | 'LMS'; quotes: QuoteView[] }
 
 type FirstPayCtor = new (opts: {
   env: 'develop' | 'product'
@@ -39,7 +39,7 @@ function loadSdk(src: string): Promise<FirstPayCtor> {
   })
 }
 
-export default function SendForm({ storeName, regionName, templateLabel, quotes }: Props) {
+export default function SendForm({ storeName, regionName, templateLabel, messageType, quotes }: Props) {
   const router = useRouter()
   const [selected, setSelected] = useState(quotes[1]?.targetCount ?? quotes[0]?.targetCount ?? 0)
   const [error, setError] = useState<string | null>(null)
@@ -72,7 +72,7 @@ export default function SendForm({ storeName, regionName, templateLabel, quotes 
   return (
     <div className="shell">
       <header className="topbar">
-        <button type="button" className="icon-btn" aria-label="뒤로" onClick={() => window.history.back()}>
+        <button type="button" className="icon-btn" aria-label="문구 수정" onClick={() => router.push('/bridge')}>
           <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden>
             <path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
@@ -82,7 +82,7 @@ export default function SendForm({ storeName, regionName, templateLabel, quotes 
       <main className="content">
         <h2 className="h2">몇 명에게 보낼까요?</h2>
         <p className="muted small">
-          {regionName ? `${regionName} 주변 ` : ''}혜택/광고 수신에 동의한 SKT 고객에게 보내요. · {storeName} · {templateLabel}
+          {regionName ? `${regionName} 주변 ` : ''}혜택/광고 수신에 동의한 SKT 고객에게 보내요. · {storeName} · {templateLabel} · {messageType}
         </p>
 
         <div className="targets" role="radiogroup" aria-label="발송 대상 규모">
@@ -113,7 +113,7 @@ export default function SendForm({ storeName, regionName, templateLabel, quotes 
             <dd className="total">{won(q.totalAmount)}</dd>
           </dl>
         )}
-        <p className="muted small">결제가 끝나면 비즈챗으로 바로 발송을 요청해요. 발송 접수에 실패하면 결제는 자동으로 취소돼요.</p>
+        <p className="muted small">결제가 끝나면 바로 발송을 요청해요. 발송 접수에 실패하면 결제는 자동으로 취소돼요.</p>
 
         {error && (
           <p className="form-error" role="alert">

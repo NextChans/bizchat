@@ -1,12 +1,29 @@
 -- 운영용 주문 저장소 (목업 InMemoryOrderRepository 대체안, Postgres)
 -- 금액·상태는 이 테이블이 기준이다. 감사 대응을 위해 이벤트는 지우지 않는다(append-only).
 
+-- 광고 초안. 비즈챗에는 화면이 없으므로 초안은 브릿지가 보관하고, 결제 후 발송 요청에 문안을 담아 보낸다
+create table ad_drafts (
+  id             varchar(16) primary key,
+  sid            uuid        not null,
+  partner_code   varchar(20) not null,
+  partner_merchant_id varchar(64) not null,
+  merchant       jsonb       not null,   -- 파트너 서명 원본(정규화 후)
+  template_id    varchar(40) not null,
+  include_link   boolean     not null,
+  slot_values    jsonb       not null,
+  message_type   varchar(3)  not null check (message_type in ('SMS','LMS')),
+  message_title  varchar(100) not null,
+  message_body   text        not null,
+  body_bytes     integer     not null,
+  created_at     timestamptz not null default now()
+);
+
 create table orders (
   id                  varchar(32) primary key,          -- = mxIssueNo
   issued_at           char(14)    not null,             -- = mxIssueDate (KST). 취소·조회에 원값 그대로
   sid                 uuid        not null,
   partner_merchant_id varchar(64) not null,
-  draft_id            varchar(64) not null,
+  draft_id            varchar(16) not null references ad_drafts(id),
   quote_id            varchar(64) not null,
   target_count        integer     not null check (target_count > 0),
   order_name          varchar(256) not null,

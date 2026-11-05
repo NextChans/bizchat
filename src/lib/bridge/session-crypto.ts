@@ -5,7 +5,8 @@ export const SESSION_TTL_SEC = 30 * 60
 /** 슬라이딩 연장 상한(진입 시점 기준) */
 export const SESSION_MAX_SEC = 2 * 60 * 60
 
-export type Handoff = { draftId: string; templateLabel: string; redirectUrl: string | null; at: number }
+/** 이 세션에서 완성한 광고 초안(본문은 서버 저장소에. 쿠키에는 참조만) */
+export type DraftRef = { draftId: string; templateLabel: string; at: number }
 
 export type BridgeSession = {
   v: 1
@@ -14,7 +15,7 @@ export type BridgeSession = {
   merchant: Merchant
   iat: number
   exp: number
-  handoff?: Handoff
+  draft?: DraftRef
 }
 
 const AAD = Buffer.from('bizchat-bridge-session-v1')

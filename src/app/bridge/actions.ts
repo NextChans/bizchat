@@ -1,13 +1,14 @@
 'use server'
 
 import { redirect } from 'next/navigation'
-import { audit, auditWarn } from '@/lib/audit'
+import { audit } from '@/lib/audit'
 import { readSession, writeSession } from '@/lib/bridge/session'
 import { getTemplateSet } from '@/lib/ad/templates'
 import { LMS_MAX_BYTES, TITLE_MAX_BYTES, renderMessage, slotsOf } from '@/lib/ad/render'
 import { validateValues } from '@/lib/ad/validate'
 import type { SlotKey } from '@/lib/ad/slots'
-import { BizchatError, getBizchatClient } from '@/lib/bizchat/client'
+import { adDraftRepo, messageTypeOf } from '@/lib/ad/draft-repository'
+import { orderRepo } from '@/lib/order/repository'
 
 export type SubmitState = {
   formError?: string
@@ -19,8 +20,8 @@ const MAX_VALUES_JSON = 16 * 1024
 export async function submitAd(_prev: SubmitState, formData: FormData): Promise<SubmitState> {
   const session = await readSession()
   if (!session) return { formError: '입력 시간이 지났어요. 캐시노트에서 배너를 다시 눌러 주세요.' }
-  // 이미 전달된 세션(중복 클릭·뒤로가기 재제출)은 새로 만들지 않는다
-  if (session.handoff) redirect('/bridge/send')
+  // 이미 결제된 초안이 있으면 문안을 바꾸지 않는다(결제 금액·발송 내용 불일치 방지)
+  if (session.draft && (await orderRepo.findChargedByDraft(session.draft.draftId))) redirect('/bridge/send')
 
   const templateId = String(formData.get('templateId') ?? '')
   const tpl = getTemplateSet(session.merchant.industry).templates.find((t) => t.id === templateId)
@@ -46,34 +47,23 @@ export async function submitAd(_prev: SubmitState, formData: FormData): Promise<
   if (msg.titleBytes > TITLE_MAX_BYTES) return { formError: `제목이 너무 길어요. (${msg.titleBytes}/${TITLE_MAX_BYTES}byte)` }
   if (msg.bodyBytes > LMS_MAX_BYTES) return { formError: `메시지가 너무 길어요. (${msg.bodyBytes}/${LMS_MAX_BYTES}byte)` }
 
-  let result
-  try {
-    result = await getBizchatClient().createAdDraft({
-      idempotencyKey: session.sid,
-      merchant: session.merchant,
-      templateId: tpl.id,
-      includeLink,
-      values: checked.values,
-      message: { title: msg.title, body: msg.body, bodyBytes: msg.bodyBytes },
-    })
-  } catch (e) {
-    auditWarn('bridge.handoff.failed', {
-      sid: session.sid,
-      retryable: e instanceof BizchatError ? e.retryable : null,
-      error: e instanceof Error ? e.message : 'unknown',
-    })
-    return { formError: '비즈챗으로 전달하지 못했어요. 잠시 후 다시 시도해 주세요.' }
-  }
-
-  await writeSession({
-    ...session,
-    handoff: { draftId: result.draftId, templateLabel: tpl.label, redirectUrl: result.redirectUrl, at: Date.now() },
+  const draft = await adDraftRepo.create({
+    sid: session.sid,
+    merchant: session.merchant,
+    templateId: tpl.id,
+    templateLabel: tpl.label,
+    includeLink,
+    values: checked.values,
+    message: { type: messageTypeOf(msg.bodyBytes), title: msg.title, body: msg.body, bodyBytes: msg.bodyBytes },
   })
-  audit('bridge.handoff.succeeded', {
+
+  await writeSession({ ...session, draft: { draftId: draft.id, templateLabel: tpl.label, at: Date.now() } })
+  audit('bridge.draft.saved', {
     sid: session.sid,
     partnerMerchantId: session.merchant.partnerMerchantId,
-    draftId: result.draftId,
+    draftId: draft.id,
     templateId: tpl.id,
+    messageType: draft.message.type,
     bodyBytes: msg.bodyBytes,
     // 파트너 원본과 사용자가 고친 가게명이 다르면 추적
     storeNameEdited: checked.values.storeName !== undefined && checked.values.storeName !== session.merchant.storeName,
