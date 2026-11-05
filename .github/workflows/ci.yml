@@ -49,3 +49,12 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - run: scripts/smoke.sh bizchat:ci
+      # 릴리즈와 같은 멀티아키 빌드가 되는지 PR 단계에서 확인(push 하지 않음). Apple Silicon 맥용 arm64 포함
+      - uses: docker/setup-qemu-action@v3
+      - name: 멀티아키 빌드 확인 (amd64·arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha

@@ -4,6 +4,10 @@ const nextConfig: NextConfig = {
   poweredByHeader: false,
   // Docker 이미지용 최소 실행 번들(.next/standalone)
   output: 'standalone',
+  // next/image 를 쓰지 않는다. sharp(아키텍처별 네이티브 모듈)를 번들에서 빼서
+  // standalone 을 순수 JS 로 유지 → amd64 에서 빌드한 결과를 arm64 이미지에도 그대로 쓴다
+  images: { unoptimized: true },
+  outputFileTracingExcludes: { '*': ['node_modules/sharp/**', 'node_modules/@img/**'] },
   async headers() {
     return [
       {
