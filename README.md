@@ -54,62 +54,19 @@ GET /bridge/send     발송 대상 규모 선택 → 비즈챗 견적 API 로 �
 
 주문 상태 전이는 `src/lib/order/types.ts`, 운영 저장소 스키마는 `docs/schema.sql`.
 
-## 파트너 진입 규격 (제안안)
+## 파트너 진입 규격
 
-`POST {BASE_URL}/bridge/entry`
+제안안 전문(필드·서명·오류 코드)은 [docs/02-partner-entry.md](docs/02-partner-entry.md).
 
-| 필드 | 필수 | 설명 |
-| --- | --- | --- |
-| `partnerCode` | Y | `cashnote` |
-| `partnerMerchantId` | Y | 파트너 가맹점 식별자 `[A-Za-z0-9_-]{1,64}` |
-| `storeName` | Y | 상호명 (50자) |
-| `categoryMain` | Y | 업종 대분류 (40자) |
-| `categorySub` | N | 업종 소분류 (40자) |
-| `address` | N | 사업장 주소 (200자) |
-| `regionName` | N | 동네명. 없으면 주소에서 추출 |
-| `storePhone` | N | 가게 연락처. 숫자/하이픈 |
-| `timestamp` | Y | epoch seconds. 서버 시각 ±300초 |
-| `nonce` | Y | `[A-Za-z0-9_-]{16,64}`, 1회용 |
-| `signature` | Y | 아래 서명의 소문자 hex |
+## 문서
 
-서명:
+설계·규격·운영·남은 일은 [`docs/`](docs/README.md) 에 있습니다.
 
-```
-canonical = 아래 순서 그대로 "key=encodeURIComponent(value)" 를 & 로 연결 (없는 필드는 빈 값으로 자리 유지)
-  partnerCode, partnerMerchantId, storeName, categoryMain, categorySub,
-  address, regionName, storePhone, timestamp, nonce
-signature = HMAC-SHA256(partnerSecret, canonical)
-```
-
-실패하면 `303 /bridge/error?code=…` (`bad_signature`, `expired`, `replay`, `unknown_partner`, `invalid_request`) 로 보냅니다. 사유 상세는 로그에만 남깁니다.
-
-## 업종 템플릿
-
-`src/lib/ad/templates.ts`. 업종은 대분류/소분류 문자열 키워드로 `food`, `construction`, `manufacturing`, `general` 중 하나로 나눕니다(`src/lib/bridge/industry.ts`).
-템플릿마다 제목·본문 세그먼트가 있고, 광고 표기 `(광고)[SKT]` 와 수신거부 문구는 고정이라 편집할 수 없습니다. 링크를 켜면 `linkUrl` 슬롯이 추가되고, https 만 허용합니다.
-
-## 환경변수
-
-`.env.example` 참고. 운영(`NODE_ENV=production`)에서는 `BRIDGE_SESSION_SECRET` 과 `CASHNOTE_PARTNER_SECRET` 이 필수이고, 서명 검증을 끌 수 없으며, `/dev/partner` 는 404 입니다.
-
-## 운영 전환 시 남은 일
-
-결제
-- [ ] **주문 저장소를 Postgres 로 교체** (`docs/schema.sql`). 지금은 인스턴스 메모리라 `next dev` 단일 프로세스에서만 맞다. 서버리스 배포 전 필수
-- [ ] 보류 건(`APPROVAL_UNKNOWN`·`SEND_UNKNOWN`) 배치 재확인 + `REFUND_FAILED`·`AMOUNT_MISMATCH` 운영 알림
-- [ ] 운영 MID 결제수단에서 가상계좌 제외 (입금 통보 전 발송 불가. 이 흐름은 즉시결제만 다룸)
-- [ ] 파트너 앱 복귀 스킴(`PARTNER_APP_SCHEME`) 확인, 웹뷰 앱투앱(카드사 앱) 스킴 등록은 파트너 앱 쪽 작업
-- [ ] 견적 만료·단가 변경 시 처리, 세금계산서/현금영수증 발행 주체 확정
-
-연동 일반
-
-- [ ] 파트너와 진입 규격 확정 (필드·서명 방식·업종 코드 체계. 문자열 키워드 분류 대신 코드 매핑)
-- [ ] 개인정보 범위 합의: 개인사업자 연락처는 개인 휴대폰일 수 있음. 로그는 마스킹·건수만 남김
-- [ ] nonce 저장소를 Redis(`SET NX EX`)로 교체. 지금은 인스턴스 메모리라 다중 인스턴스에서 완전하지 않음
-- [ ] 비즈챗 전문 확정 후 `HttpBizchatClient` 경로·필드·인증 맞추기 (지금 `/v1/targets` `/v1/quotes` `/v1/sends`, Bearer 는 가정)
-  - 멱등키(`Idempotency-Key`) 지원 필수. 없으면 발송 무응답 건을 안전하게 재시도할 수 없다
-  - 오류 분류 합의: 408·429·5xx·타임아웃 = 결과 불명(취소 안 함), 그 외 4xx = 확정 거절(망취소). `classify()` 가 기준
-  - 접수 후 비동기 결과(검수 반려·발송 실패)를 받는 방법. 반려 시 환불하려면 비즈챗 → 브릿지 콜백(서명) 또는 상태 조회 API 가 필요
-- [ ] LMS 제목·본문 바이트 상한, 광고 표기 규칙을 비즈챗·통신사 기준으로 맞추기
-- [ ] iOS WKWebView 서드파티 쿠키 정책 점검 (파트너 웹뷰에서 쿠키가 유지되는지)
-- [ ] `/bridge/entry` rate limit (WAF/엣지)
+| 문서 | 내용 |
+| --- | --- |
+| [01-overview](docs/01-overview.md) | 배경(KCD 협의), 범위, 구성, 화면 흐름, 코드 지도 |
+| [02-partner-entry](docs/02-partner-entry.md) | 파트너 진입 규격(제안안)·서명·세션 |
+| [03-payment](docs/03-payment.md) | KPN 결제 흐름·상태 전이·실패 보상 |
+| [04-bizchat-api](docs/04-bizchat-api.md) | 비즈챗 서버 간 API(가정)·오류 분류 |
+| [05-operations](docs/05-operations.md) | 환경변수·로그·배포 체크리스트 |
+| [06-decisions-and-todo](docs/06-decisions-and-todo.md) | 결정 기록·남은 일 |
