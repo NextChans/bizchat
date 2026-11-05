@@ -12,9 +12,10 @@ process.env.APP_BASE_URL = 'https://bizchat.example.com'
 
 const { preparePayment, handleAuthResult, handleVactNoti, reconcile } = await import('./service')
 const { orderRepo } = await import('./repository')
+const { adDraftRepo } = await import('../ad/draft-repository')
 
-function session(draftId = `MOCK-${randomUUID()}`): BridgeSession {
-  return {
+async function session(): Promise<BridgeSession> {
+  const s: BridgeSession = {
     v: 1,
     sid: randomUUID(),
     iat: 0,
@@ -23,8 +24,12 @@ function session(draftId = `MOCK-${randomUUID()}`): BridgeSession {
       partnerCode: 'cashnote', partnerMerchantId: 'CN_1', storeName: '가게', categoryMain: '음식점업', categorySub: '',
       address: '', regionName: '역삼동', storePhone: '', industry: 'food',
     },
-    handoff: { draftId, templateLabel: '가게 소개', redirectUrl: null, at: 0 },
   }
+  const d = await adDraftRepo.create({
+    sid: s.sid, merchant: s.merchant, templateId: 'intro', templateLabel: '가게 소개', includeLink: false, values: {},
+    message: { type: 'LMS', title: '(광고) 가게', body: '(광고)[SKT] 본문', bodyBytes: 600 },
+  })
+  return { ...s, draft: { draftId: d.id, templateLabel: d.templateLabel, at: 0 } }
 }
 
 type Call = { url: string; body: Record<string, unknown> }
@@ -53,7 +58,8 @@ beforeEach(() => {
 })
 afterEach(() => vi.unstubAllGlobals())
 
-async function prepared(s = session()) {
+async function prepared(given?: BridgeSession) {
+  const s = given ?? (await session())
   const pay = await preparePayment(s, 1000)
   const p = pay.params
   const authForm = {
@@ -73,11 +79,28 @@ describe('결제 준비', () => {
     expect(JSON.stringify(p)).not.toContain(KEY)
   })
   it('목록에 없는 대상 규모 거부', async () => {
-    await expect(preparePayment(session(), 777)).rejects.toThrow()
+    await expect(preparePayment(await session(), 777)).rejects.toThrow()
   })
 })
 
 describe('인증 결과 → 승인 → 발송', () => {
+  it('발송 요청에 서버 보관 문안·대상·결제정보를 담는다', async () => {
+    const send = vi.fn()
+    const { getBizchatClient } = await import('../bizchat/client')
+    const c = getBizchatClient()
+    const orig = c.requestSend.bind(c)
+    c.requestSend = async (req) => (send(req), orig(req))
+    const { p, authForm } = await prepared()
+    await handleAuthResult(p.mxIssueNo, authForm)
+    c.requestSend = orig
+    const req = send.mock.calls[0]![0]
+    expect(req).toMatchObject({
+      idempotencyKey: p.mxIssueNo,
+      targeting: { regionName: '역삼동', targetCount: 1000 },
+      message: { type: 'LMS', body: '(광고)[SKT] 본문' },
+      payment: { orderId: p.mxIssueNo, amount: p.amount, tid: 'TID-1', payMethod: 'CC' },
+    })
+  })
   it('정상: 승인 해시에 amount 없음, 발송 요청까지 완료', async () => {
     const { p, authForm } = await prepared()
     const o = await handleAuthResult(p.mxIssueNo, authForm)
@@ -184,14 +207,14 @@ describe('발송 실패 보상', () => {
 
 describe('중복 결제 방지', () => {
   it('같은 초안의 다른 주문이 결제됐으면 두 번째는 승인하지 않음', async () => {
-    const s = session()
+    const s = await session()
     const a = await prepared(s)
     const b = await prepared(s)
     await handleAuthResult(a.p.mxIssueNo, a.authForm)
     const o = await handleAuthResult(b.p.mxIssueNo, b.authForm)
     expect(o?.status).toBe('DUPLICATE_BLOCKED')
     expect(calls).toHaveLength(1)
-    expect((await orderRepo.findChargedByDraft(s.handoff!.draftId))?.id).toBe(a.p.mxIssueNo)
+    expect((await orderRepo.findChargedByDraft(s.draft!.draftId))?.id).toBe(a.p.mxIssueNo)
   })
 })
 
@@ -200,7 +223,7 @@ describe('가상계좌: 발급 → 입금통보', () => {
     code: '200',
     data: { replyCode: '0000', tid: 'TID-VA', payMethod: 'VA', vactNo: '0041111222200013', bankName: '테스트은행', expireDate: '20991231235959' },
   })
-  async function issued(s = session()) {
+  async function issued(s?: BridgeSession) {
     approveReply = OK_VACT
     const r = await prepared(s)
     const o = await handleAuthResult(r.p.mxIssueNo, r.authForm)
@@ -282,17 +305,17 @@ describe('가상계좌: 발급 → 입금통보', () => {
     expect(calls.some((c) => c.url.endsWith('/cancel'))).toBe(false)
   })
   it('입금기한 경과 → DEPOSIT_EXPIRED(같은 초안 재결제 가능), 늦게 온 입금통보는 받는다', async () => {
-    const s = session()
+    const s = await session()
     approveReply = () => ({ ...OK_VACT(), data: { ...OK_VACT().data, expireDate: '20200101000000' } })
     const r = await prepared(s)
     await handleAuthResult(r.p.mxIssueNo, r.authForm)
     expect((await reconcile(r.p.mxIssueNo))?.status).toBe('DEPOSIT_EXPIRED')
-    expect(await orderRepo.findChargedByDraft(s.handoff!.draftId)).toBeNull()
+    expect(await orderRepo.findChargedByDraft(s.draft!.draftId)).toBeNull()
     expect(await handleVactNoti(noti(r.p))).toBe(true)
     expect((await orderRepo.get(r.p.mxIssueNo))?.status).toBe('SEND_REQUESTED')
   })
   it('입금 대기 중에는 같은 초안의 두 번째 결제를 막는다', async () => {
-    const s = session()
+    const s = await session()
     await issued(s)
     approveReply = () => OK_APPROVE()
     const b = await prepared(s)

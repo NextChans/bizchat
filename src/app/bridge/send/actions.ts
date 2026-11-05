@@ -11,10 +11,10 @@ export type StartPaymentResult = { ok: true; pay: GoPayParams } | { ok: false; e
 /** 금액은 받지 않는다. 대상 규모만 받아 서버가 비즈챗 견적으로 금액을 정한다 */
 export async function startPayment(targetCount: number): Promise<StartPaymentResult> {
   const session = await readSession()
-  if (!session?.handoff) return { ok: false, error: '입력 시간이 지났어요. 캐시노트에서 배너를 다시 눌러 주세요.' }
+  if (!session?.draft) return { ok: false, error: '입력 시간이 지났어요. 캐시노트에서 배너를 다시 눌러 주세요.' }
   if (!Number.isSafeInteger(targetCount)) return { ok: false, error: '발송 대상을 선택해 주세요.' }
 
-  const charged = await orderRepo.findChargedByDraft(session.handoff.draftId)
+  const charged = await orderRepo.findChargedByDraft(session.draft.draftId)
   if (charged) return { ok: false, error: '이미 결제한 광고예요.', redirectTo: `/bridge/pay/result/${charged.id}` }
 
   try {

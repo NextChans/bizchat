@@ -17,6 +17,7 @@ import {
   parseKstTimestamp,
   replyCodeOf,
 } from '../firstpay/types'
+import { adDraftRepo } from '../ad/draft-repository'
 import { orderRepo } from './repository'
 import type { Order, OrderStatus } from './types'
 
@@ -61,12 +62,15 @@ export type GoPayParams = {
  * callHash 는 여기서만 만든다. 브라우저는 받은 값을 SDK 에 넘기기만 한다.
  */
 export async function preparePayment(session: BridgeSession, targetCount: number): Promise<GoPayParams> {
-  if (!session.handoff) throw new Error('no draft')
+  if (!session.draft) throw new Error('no draft')
+  const draft = await adDraftRepo.get(session.draft.draftId)
+  if (!draft || draft.sid !== session.sid) throw new Error('draft not found')
+
   const bizchat = getBizchatClient()
-  const options = await bizchat.targetOptions(session.handoff.draftId)
+  const options = await bizchat.targetOptions(draft.merchant.regionName)
   if (!options.includes(targetCount)) throw new BizchatError('invalid target count', false)
 
-  const quote = await bizchat.quote({ draftId: session.handoff.draftId, targetCount })
+  const quote = await bizchat.quote({ draftId: draft.id, regionName: draft.merchant.regionName, messageType: draft.message.type, targetCount })
   if (!Number.isSafeInteger(quote.totalAmount) || quote.totalAmount < 100) throw new Error('invalid quote amount')
 
   const cfg = getFirstPayConfig()
@@ -80,7 +84,7 @@ export async function preparePayment(session: BridgeSession, targetCount: number
     issuedAt,
     sid: session.sid,
     partnerMerchantId: session.merchant.partnerMerchantId,
-    draftId: session.handoff.draftId,
+    draftId: draft.id,
     quoteId: quote.quoteId,
     targetCount,
     orderName,
@@ -89,7 +93,7 @@ export async function preparePayment(session: BridgeSession, targetCount: number
     createdAt: now,
     updatedAt: now,
   })
-  log({ id }, 'prepared', { sid: session.sid, draftId: session.handoff.draftId, amount: quote.totalAmount, targetCount })
+  log({ id }, 'prepared', { sid: session.sid, draftId: draft.id, amount: quote.totalAmount, targetCount })
 
   return {
     sdkUrl: cfg.sdkUrl,
@@ -237,11 +241,24 @@ export async function dispatchSend(order: Order): Promise<Order | null> {
   if (!sending) return orderRepo.get(order.id)
 
   try {
+    const draft = await adDraftRepo.get(sending.draftId)
+    // 초안이 없으면 보낼 문안이 없다 → 확정 실패로 보고 환불
+    if (!draft) throw new BizchatError('draft not found', false)
+    const m = draft.merchant
     const r = await getBizchatClient().requestSend({
       idempotencyKey: sending.id,
-      draftId: sending.draftId,
       quoteId: sending.quoteId,
-      targetCount: sending.targetCount,
+      draftId: draft.id,
+      merchant: {
+        partnerCode: m.partnerCode,
+        partnerMerchantId: m.partnerMerchantId,
+        storeName: m.storeName,
+        storePhone: m.storePhone,
+        regionName: m.regionName,
+        address: m.address,
+      },
+      targeting: { regionName: m.regionName, targetCount: sending.targetCount },
+      message: draft.message,
       payment: { orderId: sending.id, amount: sending.amount, tid: sending.tid!, payMethod: sending.payMethod!, paidAt: sending.updatedAt },
     })
     const done = await orderRepo.transition(sending.id, ['SENDING'], 'SEND_REQUESTED', { sendRequestId: r.sendRequestId })
