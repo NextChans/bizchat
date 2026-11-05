@@ -193,7 +193,7 @@ export default function AdEditor({ store, templateSet }: Props) {
               이전
             </button>
             <button type="submit" className="btn primary" disabled={pending}>
-              {pending ? '전달 중…' : '완료'}
+              {pending ? '저장 중…' : '완료'}
             </button>
           </div>
         </form>

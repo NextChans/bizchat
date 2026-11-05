@@ -20,7 +20,7 @@ export async function submitAd(_prev: SubmitState, formData: FormData): Promise<
   const session = await readSession()
   if (!session) return { formError: '입력 시간이 지났어요. 캐시노트에서 배너를 다시 눌러 주세요.' }
   // 이미 전달된 세션(중복 클릭·뒤로가기 재제출)은 새로 만들지 않는다
-  if (session.handoff) redirect('/bridge/done')
+  if (session.handoff) redirect('/bridge/send')
 
   const templateId = String(formData.get('templateId') ?? '')
   const tpl = getTemplateSet(session.merchant.industry).templates.find((t) => t.id === templateId)
@@ -78,5 +78,5 @@ export async function submitAd(_prev: SubmitState, formData: FormData): Promise<
     // 파트너 원본과 사용자가 고친 가게명이 다르면 추적
     storeNameEdited: checked.values.storeName !== undefined && checked.values.storeName !== session.merchant.storeName,
   })
-  redirect('/bridge/done')
+  redirect('/bridge/send')
 }

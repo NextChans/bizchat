@@ -1,7 +1,7 @@
 import 'server-only'
 import { cookies } from 'next/headers'
 import { getSessionSecret } from '../env'
-import { SESSION_TTL_SEC, seal, unseal, type BridgeSession } from './session-crypto'
+import { SESSION_MAX_SEC, SESSION_TTL_SEC, seal, unseal, type BridgeSession } from './session-crypto'
 
 export const SESSION_COOKIE = 'bizchat_bridge'
 
@@ -26,6 +26,8 @@ export async function readSession(): Promise<BridgeSession | null> {
 /** Server Action / Route Handler 에서만 호출 가능 */
 export async function writeSession(session: BridgeSession): Promise<void> {
   const store = await cookies()
-  const remaining = Math.max(0, session.exp - Math.floor(Date.now() / 1000))
-  store.set(SESSION_COOKIE, sealSession(session), { ...sessionCookieOptions, maxAge: remaining })
+  const now = Math.floor(Date.now() / 1000)
+  // 결제창(최대 30분)을 오가는 동안 끊기지 않게 활동 시 연장. 진입 후 2시간이 상한
+  const exp = Math.min(session.iat + SESSION_MAX_SEC, now + SESSION_TTL_SEC)
+  store.set(SESSION_COOKIE, sealSession({ ...session, exp }), { ...sessionCookieOptions, maxAge: Math.max(0, exp - now) })
 }

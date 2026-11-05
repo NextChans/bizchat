@@ -105,3 +105,14 @@ code { background: var(--surface); padding: 1px 6px; border-radius: 4px; font-si
 .devform .row { display: flex; gap: 8px; flex-wrap: wrap; }
 .banner { display: block; width: 100%; border: 0; border-radius: 14px; padding: 18px; background: linear-gradient(120deg, #ff7a45, #ff4d6d); color: #fff; font-size: 17px; font-weight: 700; text-align: left; cursor: pointer; }
 .banner small { display: block; font-weight: 500; opacity: 0.9; margin-top: 4px; }
+
+.targets { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 16px 0; }
+.target { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; border: 1px solid var(--line); background: #fff; border-radius: 14px; padding: 14px 16px; cursor: pointer; text-align: left; }
+.target.active { border-color: var(--primary); background: var(--primary-soft); }
+.target-count { font-size: 17px; font-weight: 700; }
+.target-price { font-size: 14px; color: var(--muted); }
+.target.active .target-price { color: var(--primary); }
+.bill { display: grid; grid-template-columns: 1fr auto; gap: 8px 0; margin: 8px 0 16px; padding: 16px 18px; background: var(--surface); border-radius: 14px; font-size: 15px; }
+.bill dt { color: var(--muted); }
+.bill dd { margin: 0; text-align: right; padding-left: 12px; }
+.bill .total { font-weight: 700; font-size: 17px; color: var(--fg); border-top: 1px solid var(--line); padding-top: 10px; }

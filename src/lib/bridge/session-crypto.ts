@@ -2,6 +2,8 @@ import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'node:cr
 import type { Merchant } from './merchant'
 
 export const SESSION_TTL_SEC = 30 * 60
+/** 슬라이딩 연장 상한(진입 시점 기준) */
+export const SESSION_MAX_SEC = 2 * 60 * 60
 
 export type Handoff = { draftId: string; templateLabel: string; redirectUrl: string | null; at: number }
 
