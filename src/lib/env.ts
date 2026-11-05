@@ -33,5 +33,12 @@ export function isSignatureEnforced(): boolean {
 export function isDevToolsEnabled(): boolean {
   if (process.env.VERCEL_ENV === 'production') return false
   if (!isProd()) return true
+  // 로컬 컨테이너(docker compose) 체험용. 실결제 서버(KPN_ENV=product)와는 절대 같이 켜지지 않는다
+  if (isLocalSandbox()) return process.env.KPN_ENV?.trim() !== 'product'
   return process.env.VERCEL_ENV === 'preview' && process.env.BRIDGE_DEV_TOOLS === 'true'
+}
+
+/** 로컬 컨테이너 실행(APP_ENV=local). 운영 빌드(NODE_ENV=production)를 그대로 쓰되 개발 도구만 연다 */
+export function isLocalSandbox(): boolean {
+  return process.env.APP_ENV === 'local'
 }

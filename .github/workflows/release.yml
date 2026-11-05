@@ -1,0 +1,90 @@
+name: Release
+
+# main 에 머지된 커밋에 vX.Y.Z 태그를 push 하면 실행:
+#   검증 → 멀티아키(amd64·arm64) 이미지 GHCR push → 스모크 → GitHub Release 생성
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write   # Release 생성
+  packages: write   # GHCR push
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 태그가 main 에 있는 커밋인지 확인
+        run: |
+          git fetch origin main --depth=1000
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::tag is not on main"; exit 1; }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm test
+
+      - name: 이미지 이름
+        id: img
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 스모크용 이미지(amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: bizchat:release
+          build-args: APP_VERSION=${{ github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - run: scripts/smoke.sh bizchat:release
+
+      - name: 멀티아키 이미지 push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ steps.img.outputs.name }}:${{ github.ref_name }}
+            ${{ steps.img.outputs.name }}:latest
+          build-args: APP_VERSION=${{ github.ref_name }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ github.ref_name }}
+          cache-from: type=gha
+
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ steps.img.outputs.name }}
+        run: |
+          cat > notes.md <<NOTES
+          ## 컨테이너 이미지
+          \`\`\`bash
+          docker pull ${IMAGE}:${GITHUB_REF_NAME}
+          \`\`\`
+          linux/amd64 · linux/arm64 (Apple Silicon 맥 포함). 로컬 실행은 README 의 "Docker 로 띄우기" 참고.
+          NOTES
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --notes-file notes.md --verify-tag

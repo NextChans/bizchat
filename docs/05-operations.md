@@ -11,6 +11,9 @@
 | `KPN_ENV` | | `develop`(기본) / `product` |
 | `KPN_MX_ID` · `KPN_PASSKEY` | Y | 운영 값은 배포 환경변수에만. 공개 테스트 계정은 `.env.example` |
 | `APP_BASE_URL` | Y | returnUrl 기준 주소 |
+| `KPN_VACT_EXPIRE_HOURS` | | 가상계좌 입금기한(시간, 1~168, 기본 24) |
+| `APP_ENV` | | `local` 이면 운영 빌드에서도 `/sample`·`/dev/partner` 허용(`KPN_ENV=product` 면 차단). docker compose 전용 |
+| `APP_VERSION` | | `/api/health` 에 노출할 버전. 이미지 빌드 인자로 주입 |
 | `PARTNER_APP_SCHEME` | | 간편결제 후 앱 복귀 스킴(`xxx://`). 미정 |
 | `BIZCHAT_API_BASE_URL` · `BIZCHAT_API_KEY` | | 비우면 목업 클라이언트 |
 | `BIZCHAT_MOCK_SEND` | | 목업 발송 응답: 비움=정상 / `reject` / `timeout` |

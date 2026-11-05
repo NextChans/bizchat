@@ -111,3 +111,13 @@ export function inquireResult(p: { mxIssueNo: string; mxIssueDate: string }) {
     15_000,
   )
 }
+
+/**
+ * 개발계 전용: 가상계좌 입금통보 테스트(실 입금 없이 통보만 발생시킨다).
+ * 통보는 발급 때 넘긴 vactNotiUrl 로 간다. 그 주소가 외부에서 접근 가능해야 받는다.
+ */
+export function requestTestDeposit(mxIssueNo: string): Promise<ApiResponse> {
+  const { env, mxId, baseUrl } = getFirstPayConfig()
+  if (env !== 'develop') throw new Error('test deposit is develop only')
+  return postJson(`${baseUrl}/api/v1/test/vact/deposit`, { mxId, mxIssueNo }, 15_000)
+}

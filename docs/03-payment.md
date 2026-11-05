@@ -58,6 +58,11 @@ READY ─(인증 0000)→ APPROVING ─(승인 성공)→ PAID → SENDING ─�
   ├ USER_CANCELED      ├ APPROVAL_FAILED              ├ SEND_UNKNOWN ─(재확인)→ SENDING
   ├ AUTH_FAILED        ├ APPROVAL_UNKNOWN ─(조회)→ PAID / APPROVAL_FAILED
   └ DUPLICATE_BLOCKED  └ AMOUNT_MISMATCH → 망취소      └ REFUNDING → REFUNDED / REFUND_FAILED
+
+가상계좌(VA): 승인 = 계좌 발급. 입금통보를 받아야 PAID
+APPROVING ─(승인 성공, VA)→ WAITING_DEPOSIT ─(입금통보 00003000)→ PAID → (위와 같음)
+APPROVAL_UNKNOWN ─(조회: VA 승인)→ WAITING_DEPOSIT      └ DEPOSIT_EXPIRED (기한 경과. 늦은 입금통보는 PAID 로 받음)
+PAID·SEND_UNKNOWN·SEND_REQUESTED ─(입금취소 통보 00003100)→ DEPOSIT_CANCELED (운영 알림)
 ```
 
 `src/lib/order/types.ts` 가 기준. 모든 전이는 "현재 상태가 from 중 하나일 때만"(CAS)이고, 경합에서 진 쪽은 아무것도 하지 않는다.
@@ -99,8 +104,12 @@ READY ─(인증 0000)→ APPROVING ─(승인 성공)→ PAID → SENDING ─�
 
 ## 결제 범위 제한
 
-- **가상계좌 미지원.** 입금 통보 후에야 결제가 끝나는데 이 흐름은 즉시결제만 다룬다. `vactNotiUrl` 을 넘기지 않는다.
-  운영 MID 결제수단에서 VA 를 빼야 한다. 승인 응답에 `vactNo` 가 오면 `order.virtual_account_unsupported` 경고 로그.
+- **가상계좌: 입금통보로 확정.** 결제창 호출에 `vactNotiUrl`(`{APP_BASE_URL}/bridge/pay/vact-noti`)과 `expireDate`(`KPN_VACT_EXPIRE_HOURS`, 기본 24시간)를 넘긴다.
+  - 통보 검증: `MxHASH256 = SHA256(MxID + passKey + MxIssueNO + MxIssueDate + Amount + Currency)` 를 **저장한 주문 값**으로 계산해 상수시간 비교(kpn_pg_manual `payment-window/virtual-account-notify.mdx`, `reference/errors.mdx`)
+  - 응답: 반영했거나 다시 받아도 할 일이 없으면 `ACK=200OKOK`. 지금 처리할 수 없으면(승인 처리 중·발송 중·모르는 주문·위조) `ACK=400FAIL` → 결제서버 재전송
+  - 입금이 끝난 VA 는 취소 API 가 없다(`policy.mdx`). 발송 접수 거절 시 자동 망취소 대신 `REFUND_FAILED`(환불 요청, 구매자 환불계좌 필요)
+  - 입금 대기 중에는 같은 초안의 다른 결제를 막는다(`WAITING_DEPOSIT` ∈ `CHARGED_OR_MAYBE`). 기한이 지나면 풀린다
+  - 개발계는 실입금 불가. `POST https://dev.firstpay.co.kr/api/v1/test/vact/deposit` 로 통보를 발생시키거나(공개 URL 필요), 로컬은 입금 대기 화면의 `[개발] 입금통보 보내기`
 - 부분취소·환불 요청 미구현. 1,004원은 매입·매입취소가 안 되는 금액이라 운영 시험에 쓰지 않는다(견적 금액 구조상 나오지 않음).
 - `appScheme`: 간편결제 후 파트너 앱 복귀용. `PARTNER_APP_SCHEME` 미정. 카드사 앱 이동(앱투앱) 스킴 등록은 파트너 앱 작업
   (kpn_pg_manual `reference/webview.mdx`).
@@ -108,7 +117,8 @@ READY ─(인증 0000)→ APPROVING ─(승인 성공)→ PAID → SENDING ─�
 ## 검증 기록
 
 - 단위 테스트(`src/lib/order/service.test.ts`): 해시 입력값, 멱등·동시 콜백, 금액 변조, SSRF 4종, 9000, replyCode 실패,
-  승인 무응답 → 조회 확정, 망취소 본문, 발송 무응답 시 취소 안 함, 취소 실패, 중복 결제, 발송 페이로드
+  승인 무응답 → 조회 확정, 망취소 본문, 발송 무응답 시 취소 안 함, 취소 실패, 중복 결제, 발송 페이로드,
+  가상계좌(발급만으로 발송 안 함, 입금통보 해시·위조·재전송·APPROVING 중 FAIL, 조회 VA 승인, 입금 취소, 입금 후 수동 환불, 기한 경과)
 - 2026-11-05 테스트 결제서버 종단(Playwright, iPhone 13): 결제창 정상 표시(상품명·금액, 해시 통과),
   결제창 닫기 → returnUrl `9000` → USER_CANCELED 화면까지 확인
 - **미검증: 실제 카드 승인 이후** (실물 카드 필요). 승인 응답 필드는 문서 기준으로만 구현됨

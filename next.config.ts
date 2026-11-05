@@ -2,6 +2,8 @@ import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  // Docker 이미지용 최소 실행 번들(.next/standalone)
+  output: 'standalone',
   async headers() {
     return [
       {

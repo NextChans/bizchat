@@ -10,7 +10,7 @@ process.env.KPN_MX_ID = MX
 process.env.KPN_PASSKEY = KEY
 process.env.APP_BASE_URL = 'https://bizchat.example.com'
 
-const { preparePayment, handleAuthResult, reconcile } = await import('./service')
+const { preparePayment, handleAuthResult, handleVactNoti, reconcile } = await import('./service')
 const { orderRepo } = await import('./repository')
 const { adDraftRepo } = await import('../ad/draft-repository')
 
@@ -215,5 +215,110 @@ describe('중복 결제 방지', () => {
     expect(o?.status).toBe('DUPLICATE_BLOCKED')
     expect(calls).toHaveLength(1)
     expect((await orderRepo.findChargedByDraft(s.draft!.draftId))?.id).toBe(a.p.mxIssueNo)
+  })
+})
+
+describe('가상계좌: 발급 → 입금통보', () => {
+  const OK_VACT = () => ({
+    code: '200',
+    data: { replyCode: '0000', tid: 'TID-VA', payMethod: 'VA', vactNo: '0041111222200013', bankName: '테스트은행', expireDate: '20991231235959' },
+  })
+  async function issued(s?: BridgeSession) {
+    approveReply = OK_VACT
+    const r = await prepared(s)
+    const o = await handleAuthResult(r.p.mxIssueNo, r.authForm)
+    return { ...r, o }
+  }
+  const noti = (p: { mxIssueNo: string; mxIssueDate: string; amount: number }, over: Record<string, string> = {}) => ({
+    MxID: MX, PayMethod: 'VA', Currency: 'KRW', MxIssueNO: p.mxIssueNo, MxIssueDate: p.mxIssueDate, Amount: String(p.amount),
+    ReplyCode: '00003000', VactNo: '0041111222200013', TID: 'TID-VA', AuthDate: '20261105120000',
+    MxHASH256: sha(`${MX}${KEY}${p.mxIssueNo}${p.mxIssueDate}${p.amount}KRW`),
+    ...over,
+  })
+
+  it('결제창에 vactNotiUrl·입금기한을 넘긴다', async () => {
+    const { p } = await prepared()
+    expect(p.vactNotiUrl).toBe('https://bizchat.example.com/bridge/pay/vact-noti')
+    expect(p.expireDate).toMatch(/^\d{14}$/)
+  })
+  it('승인(계좌 발급)만으로는 발송하지 않고 입금 대기', async () => {
+    const { o } = await issued()
+    expect(o?.status).toBe('WAITING_DEPOSIT')
+    expect(o?.sendRequestId).toBeUndefined()
+    expect(o).toMatchObject({ payMethod: 'VA', vactNo: '0041111222200013', bankName: '테스트은행', vactExpireAt: '20991231235959' })
+  })
+  it('입금 완료 통보(해시 일치) → PAID → 발송 요청, 재전송은 멱등', async () => {
+    const { p } = await issued()
+    expect(await handleVactNoti(noti(p))).toBe(true)
+    const o = await orderRepo.get(p.mxIssueNo)
+    expect(o?.status).toBe('SEND_REQUESTED')
+    expect(o?.depositedAt).toBe('20261105120000')
+    expect(await handleVactNoti(noti(p))).toBe(true)
+    expect((await orderRepo.get(p.mxIssueNo))?.sendRequestId).toBe(o?.sendRequestId)
+  })
+  it('해시 대문자 hex 도 받는다', async () => {
+    const { p } = await issued()
+    expect(await handleVactNoti(noti(p, { MxHASH256: sha(`${MX}${KEY}${p.mxIssueNo}${p.mxIssueDate}${p.amount}KRW`).toUpperCase() }))).toBe(true)
+  })
+  it('해시·금액·주문시각 위조 → FAIL, 상태 그대로', async () => {
+    const { p } = await issued()
+    expect(await handleVactNoti(noti(p, { MxHASH256: 'a'.repeat(64) }))).toBe(false)
+    expect(await handleVactNoti(noti(p, { Amount: '100' }))).toBe(false)
+    expect(await handleVactNoti(noti(p, { MxIssueDate: '20000101000000' }))).toBe(false)
+    expect(await handleVactNoti(noti(p, { MxID: 'other' }))).toBe(false)
+    expect((await orderRepo.get(p.mxIssueNo))?.status).toBe('WAITING_DEPOSIT')
+  })
+  it('모르는 주문번호 → FAIL(재전송 받아 두고 운영 확인)', async () => {
+    expect(await handleVactNoti(noti({ mxIssueNo: 'BZ20261105000000ZZZZZZZZZZ', mxIssueDate: '20261105000000', amount: 1000 }))).toBe(false)
+    expect(await handleVactNoti(noti({ mxIssueNo: 'not-ours', mxIssueDate: '20261105000000', amount: 1000 }))).toBe(false)
+  })
+  it('승인 처리 중(APPROVING)에 온 통보 → FAIL 로 재전송 유도', async () => {
+    const { p } = await prepared()
+    await orderRepo.claimForApproval(p.mxIssueNo, { fdTid: 'X' })
+    expect(await handleVactNoti(noti(p))).toBe(false)
+  })
+  it('승인 무응답 → 조회 결과가 VA 승인이면 PAID 가 아니라 입금 대기, 이후 통보로 발송', async () => {
+    approveReply = () => new DOMException('timeout', 'TimeoutError')
+    const { p, authForm } = await prepared()
+    await handleAuthResult(p.mxIssueNo, authForm)
+    inquiryReply = () => ({
+      code: '0000',
+      data: { transactionCount: 1, transactions: [{ PayStatus: 'APPROVAL', ReplyCode: '0000', Amount: p.amount, TID: 'TID-VA', PayMethod: 'VA' }] },
+    })
+    expect((await reconcile(p.mxIssueNo))?.status).toBe('WAITING_DEPOSIT')
+    expect(await handleVactNoti(noti(p))).toBe(true)
+    expect((await orderRepo.get(p.mxIssueNo))?.status).toBe('SEND_REQUESTED')
+  })
+  it('입금 취소 통보 → DEPOSIT_CANCELED, 재전송 멱등', async () => {
+    const { p } = await issued()
+    await handleVactNoti(noti(p))
+    expect(await handleVactNoti(noti(p, { ReplyCode: '00003100' }))).toBe(true)
+    expect((await orderRepo.get(p.mxIssueNo))?.status).toBe('DEPOSIT_CANCELED')
+    expect(await handleVactNoti(noti(p, { ReplyCode: '00003100' }))).toBe(true)
+  })
+  it('입금 후 발송 접수 거절 → 취소 API 를 부르지 않고 수동 환불 대상', async () => {
+    const { p } = await issued()
+    process.env.BIZCHAT_MOCK_SEND = 'reject'
+    expect(await handleVactNoti(noti(p))).toBe(true)
+    const o = await orderRepo.get(p.mxIssueNo)
+    expect(o?.status).toBe('REFUND_FAILED')
+    expect(calls.some((c) => c.url.endsWith('/cancel'))).toBe(false)
+  })
+  it('입금기한 경과 → DEPOSIT_EXPIRED(같은 초안 재결제 가능), 늦게 온 입금통보는 받는다', async () => {
+    const s = await session()
+    approveReply = () => ({ ...OK_VACT(), data: { ...OK_VACT().data, expireDate: '20200101000000' } })
+    const r = await prepared(s)
+    await handleAuthResult(r.p.mxIssueNo, r.authForm)
+    expect((await reconcile(r.p.mxIssueNo))?.status).toBe('DEPOSIT_EXPIRED')
+    expect(await orderRepo.findChargedByDraft(s.draft!.draftId)).toBeNull()
+    expect(await handleVactNoti(noti(r.p))).toBe(true)
+    expect((await orderRepo.get(r.p.mxIssueNo))?.status).toBe('SEND_REQUESTED')
+  })
+  it('입금 대기 중에는 같은 초안의 두 번째 결제를 막는다', async () => {
+    const s = await session()
+    await issued(s)
+    approveReply = () => OK_APPROVE()
+    const b = await prepared(s)
+    expect((await handleAuthResult(b.p.mxIssueNo, b.authForm))?.status).toBe('DUPLICATE_BLOCKED')
   })
 })

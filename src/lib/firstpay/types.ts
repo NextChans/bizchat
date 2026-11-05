@@ -41,7 +41,22 @@ export function replyCodeOf(res: ApiResponse | null | undefined): string {
   return res?.data?.replyCode ?? String(res?.code ?? '')
 }
 
+/** 가상계좌 입금통보 ReplyCode */
+export const VACT_DEPOSITED = '00003000'
+export const VACT_DEPOSIT_CANCELED = '00003100'
+/** 입금통보 응답. 이 문자열이 아니면 결제서버는 실패로 보고 다시 보낸다 */
+export const VACT_ACK_OK = 'ACK=200OKOK'
+export const VACT_ACK_FAIL = 'ACK=400FAIL'
+
 /** YYYYMMDDHHMMSS (KST) */
 export function orderTimestamp(date = new Date()): string {
   return new Date(date.getTime() + 9 * 3600_000).toISOString().replace(/\D/g, '').slice(0, 14)
+}
+
+/** YYYYMMDDHHMMSS (KST) → epoch ms. 형식이 틀리면 NaN */
+export function parseKstTimestamp(s: string | undefined): number {
+  const m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/.exec(s ?? '')
+  if (!m) return Number.NaN
+  const [, y, mo, d, h, mi, se] = m.map(Number) as number[]
+  return Date.UTC(y!, mo! - 1, d!, h!, mi!, se!) - 9 * 3600_000
 }

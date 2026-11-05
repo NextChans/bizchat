@@ -36,6 +36,10 @@ create table orders (
   reply_code          varchar(8),
   reply_message       varchar(200),
   send_request_id     varchar(64),
+  vact_no             varchar(32),                      -- 가상계좌 발급 계좌
+  bank_name           varchar(30),
+  vact_expire_at      char(14),                         -- 입금기한 (KST)
+  deposited_at        char(14),                         -- 입금통보 AuthDate (KST)
   approving_at        timestamptz,
   created_at          timestamptz not null default now(),
   updated_at          timestamptz not null default now()
@@ -43,12 +47,12 @@ create table orders (
 
 -- 같은 초안에 "결제가 성립했거나 성립했을 수 있는" 주문은 하나만 (중복 결제 차단)
 create unique index orders_one_charged_per_draft on orders (draft_id)
-  where status in ('APPROVING','APPROVAL_UNKNOWN','AMOUNT_MISMATCH','PAID','SENDING','SEND_UNKNOWN',
+  where status in ('APPROVING','APPROVAL_UNKNOWN','AMOUNT_MISMATCH','WAITING_DEPOSIT','PAID','SENDING','SEND_UNKNOWN',
                    'SEND_REQUESTED','REFUNDING','REFUND_FAILED');
 
 -- 보류 건 배치 재확인 대상
 create index orders_pending on orders (status, updated_at)
-  where status in ('APPROVAL_UNKNOWN','SEND_UNKNOWN','REFUND_FAILED','AMOUNT_MISMATCH');
+  where status in ('APPROVAL_UNKNOWN','SEND_UNKNOWN','REFUND_FAILED','AMOUNT_MISMATCH','WAITING_DEPOSIT','DEPOSIT_CANCELED');
 
 create table order_events (
   id         bigserial primary key,
